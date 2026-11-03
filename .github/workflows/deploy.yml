@@ -1,0 +1,100 @@
+name: Python Flask EC2 CI-CD
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      TF_VAR_key_name: ${{ secrets.EC2_KEY_NAME }}
+      TF_VAR_ssh_cidr: ${{ secrets.SSH_CIDR }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get EC2 Public IP
+        id: ec2
+        run: |
+          IP=$(terraform output -raw ec2_public_ip)
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Wait for EC2 SSH
+        run: |
+          IP="${{ steps.ec2.outputs.ip }}"
+
+          for i in {1..30}; do
+            if ssh-keyscan -T 5 "$IP" >> ~/.ssh/known_hosts 2>/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Copy Application Files
+        run: |
+          scp app.py requirements.txt \
+          ec2-user@${{ steps.ec2.outputs.ip }}:/opt/python-app/
+
+      - name: Install Python Dependencies
+        run: |
+          ssh ec2-user@${{ steps.ec2.outputs.ip }} << 'EOF'
+          sudo python3 -m venv /opt/python-app/venv
+
+          sudo /opt/python-app/venv/bin/pip install \
+          -r /opt/python-app/requirements.txt
+          EOF
+
+      - name: Restart Application
+        run: |
+          ssh ec2-user@${{ steps.ec2.outputs.ip }} \
+          "sudo systemctl restart python-app"
+
+      - name: Check Application Status
+        run: |
+          ssh ec2-user@${{ steps.ec2.outputs.ip }} \
+          "sudo systemctl status python-app --no-pager"
+
+      - name: Verify Application
+        run: |
+          curl --retry 10 \
+          --retry-delay 5 \
+          --retry-connrefused \
+          http://${{ steps.ec2.outputs.ip }}:8000/health
