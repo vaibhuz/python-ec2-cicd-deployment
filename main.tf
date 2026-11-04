@@ -38,8 +38,8 @@ resource "aws_security_group" "python_sg" {
 
   ingress {
     description = "Python Application"
-    from_port   = 80
-    to_port     = 80
+    from_port   = 8000
+    to_port     = 8000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -78,7 +78,7 @@ resource "aws_instance" "python_ec2" {
     [Service]
     User=ec2-user
     WorkingDirectory=/opt/python-app
-    ExecStart=/opt/python-app/venv/bin/gunicorn --workers 2 --bind 0.0.0.0:80 app:app
+    ExecStart=/opt/python-app/venv/bin/gunicorn --workers 2 --bind 0.0.0.0:8000 app:app
     Restart=always
 
     [Install]
